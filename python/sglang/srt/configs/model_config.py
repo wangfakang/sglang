@@ -256,7 +256,17 @@ class ModelConfig:
             if is_draft_model
             else server_args.decrypted_config_file
         )
-        return ModelConfig(
+
+        # Parse index_topk_mode from server_args
+        index_topk_pattern = None
+        index_topk_freq = None
+        if server_args.index_topk_mode is not None:
+            if server_args.index_topk_mode.isdigit():
+                index_topk_freq = int(server_args.index_topk_mode)
+            else:
+                index_topk_pattern = server_args.index_topk_mode
+
+        model_config = ModelConfig(
             model_path=model_path or server_args.model_path,
             trust_remote_code=server_args.trust_remote_code,
             revision=model_revision or server_args.revision,
@@ -277,6 +287,18 @@ class ModelConfig:
             disable_hybrid_swa_memory=server_args.disable_hybrid_swa_memory,
             **kwargs,
         )
+
+        # Apply index_topk settings directly to hf_config if specified
+        if index_topk_pattern is not None:
+            model_config.hf_config.index_topk_pattern = index_topk_pattern
+            if hasattr(model_config, "hf_text_config"):
+                model_config.hf_text_config.index_topk_pattern = index_topk_pattern
+        if index_topk_freq is not None:
+            model_config.hf_config.index_topk_freq = index_topk_freq
+            if hasattr(model_config, "hf_text_config"):
+                model_config.hf_text_config.index_topk_freq = index_topk_freq
+
+        return model_config
 
     def _config_draft_model(self):
         is_draft_model = self.is_draft_model

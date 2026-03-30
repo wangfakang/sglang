@@ -482,6 +482,9 @@ class ServerArgs:
     disable_flashinfer_autotune: bool = False
     mamba_backend: str = "triton"
 
+    # IndexCache (NSA index) settings
+    index_topk_mode: Optional[str] = None
+
     # Speculative decoding
     speculative_algorithm: Optional[str] = None
     speculative_draft_model_path: Optional[str] = None
@@ -4624,6 +4627,15 @@ class ServerArgs:
             type=str,
             choices=NSA_CHOICES,
             help="NSA decode backend. If not specified, auto-detects based on hardware and kv_cache_dtype.",
+        )
+        parser.add_argument(
+            "--index-topk-mode",
+            default=ServerArgs.index_topk_mode,
+            type=str,
+            help="IndexCache topk mode. Supports two formats: "
+            "1) Pattern mode: a string like 'FSFSFSFS' where S= Shared (reuses cached indices), Full (runs indexer); "
+            "2) Freq mode: an integer like '1' means every 1th layer is Full. "
+            "If not specified, uses model config defaults.",
         )
         parser.add_argument(
             "--fp8-gemm-backend",
