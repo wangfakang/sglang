@@ -78,8 +78,10 @@ __device__ __forceinline__ T gelu_tanh(const T& x) {
   constexpr float kAlpha = 0.044715f;
   constexpr float kBeta = 0.7978845608028654f;
   float f32_val = detail::to_f32(x);
-  const float cdf = 0.5f * (1.0f + tanhf((kBeta * (f32_val + kAlpha * f32_val * f32_val * f32_val))));
-  return detail::from_f32<T>(f32_val * cdf);
+  const float inner = kBeta * (f32_val + kAlpha * f32_val * f32_val * f32_val);
+  float tanh_val;
+  asm("tanh.approx.f32 %0, %1;" : "=f"(tanh_val) : "f"(inner));
+  return detail::from_f32<T>(f32_val * 0.5f * (1.0f + tanh_val));
 }
 
 void silu_and_mul(at::Tensor& out, at::Tensor& input) {

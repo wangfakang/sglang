@@ -58,6 +58,22 @@ __device__ __forceinline__ float compute_score(float x) {
   }
 }
 
+// Warp-level max reduction returning both value and index.
+// Uses 2 redux.sync + 1 shfl instead of 10 shuffles (5 rounds of 2).
+__device__ __forceinline__ void warpMaxWithIndex(
+    float& val, int& idx, uint32_t lane_id, uint32_t warp_mask) {
+  // Step 1: Save original value, then find max across warp via redux.sync
+  const float my_val = val;
+  asm("redux.sync.max.f32 %0, %1, %2;" : "=f"(val) : "f"(my_val), "r"(warp_mask));
+  // Step 2: Determine which lane(s) have the max value
+  const uint32_t has_max = (my_val == val) ? lane_id : 0xFFFFFFFFu;
+  // Step 3: Find the lowest lane that has the max (redux.sync.min.u32)
+  uint32_t min_lane;
+  asm("redux.sync.min.u32 %0, %1, %2;" : "=r"(min_lane) : "r"(has_max), "r"(warp_mask));
+  // Step 4: Broadcast the expert index from the winning lane
+  idx = __shfl_sync(warp_mask, idx, min_lane);
+}
+
 template <uint32_t kWarpsPerToken, ScoringFunc kScoringFunc>
 __global__ void moe_fused_gate_kernel_small_token(const MoEFusedGateParams __grid_constant__ params) {
   const auto& [input, bias, output, indices, num_rows, num_experts, topk, num_fused_shared_experts, renormalize, routed_scaling_factor, apply_routed_scaling_factor_on_output] =
@@ -111,15 +127,7 @@ __global__ void moe_fused_gate_kernel_small_token(const MoEFusedGateParams __gri
     float warp_max_val = my_val;
     int warp_max_expert = my_expert;
 
-#pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2) {
-      float other_val = __shfl_down_sync(SGL_WARP_SYNC_MASK, warp_max_val, offset);
-      int other_expert = __shfl_down_sync(SGL_WARP_SYNC_MASK, warp_max_expert, offset);
-      if (other_val > warp_max_val) {
-        warp_max_val = other_val;
-        warp_max_expert = other_expert;
-      }
-    }
+    warpMaxWithIndex(warp_max_val, warp_max_expert, lane_id, SGL_WARP_SYNC_MASK);
 
     if (lane_id == 0 && warp_id < kWarpsPerToken) {
       warp_maxs[warp_id] = warp_max_val;
@@ -132,15 +140,7 @@ __global__ void moe_fused_gate_kernel_small_token(const MoEFusedGateParams __gri
       float final_max = (lane_id < num_warps) ? warp_maxs[lane_id] : -FLT_MAX;
       int final_expert = (lane_id < num_warps) ? warp_experts[lane_id] : -1;
 
-#pragma unroll
-      for (int offset = 16; offset > 0; offset /= 2) {
-        float other_val = __shfl_down_sync(SGL_WARP_SYNC_MASK, final_max, offset);
-        int other_expert = __shfl_down_sync(SGL_WARP_SYNC_MASK, final_expert, offset);
-        if (other_val > final_max) {
-          final_max = other_val;
-          final_expert = other_expert;
-        }
-      }
+      warpMaxWithIndex(final_max, final_expert, lane_id, SGL_WARP_SYNC_MASK);
 
       if (lane_id == 0) {
         selected_experts[k] = final_expert;
@@ -227,15 +227,7 @@ __global__ void moe_fused_gate_kernel(const MoEFusedGateParams __grid_constant__
       }
     }
 
-    for (int offset = kWarpSize / 2; offset > 0; offset /= 2) {
-      float other_val = __shfl_down_sync(SGL_WARP_SYNC_MASK, max_val, offset);
-      int other_expert = __shfl_down_sync(SGL_WARP_SYNC_MASK, max_expert, offset);
-
-      if (other_val > max_val || (other_val == max_val && other_expert < max_expert)) {
-        max_val = other_val;
-        max_expert = other_expert;
-      }
-    }
+    warpMaxWithIndex(max_val, max_expert, lane_id, SGL_WARP_SYNC_MASK);
 
     if (lane_id == 0) {
       warp_selected_experts[k] = max_expert;

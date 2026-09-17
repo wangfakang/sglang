@@ -8,12 +8,17 @@
 
 __device__ __forceinline__ float GroupReduceMax(float val, const int tid) {
   unsigned mask = threadIdx.x % 32 >= 16 ? 0xffff0000 : 0x0000ffff;
-
+#if __CUDA_ARCH__ >= 800
+  float result;
+  asm("redux.sync.max.f32 %0, %1, %2;" : "=f"(result) : "f"(val), "r"(mask));
+  return result;
+#else
   val = fmaxf(val, __shfl_xor_sync(mask, val, 8));
   val = fmaxf(val, __shfl_xor_sync(mask, val, 4));
   val = fmaxf(val, __shfl_xor_sync(mask, val, 2));
   val = fmaxf(val, __shfl_xor_sync(mask, val, 1));
   return val;
+#endif
 }
 
 template <

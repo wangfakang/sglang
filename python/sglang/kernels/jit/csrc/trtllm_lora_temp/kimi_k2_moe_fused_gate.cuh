@@ -10,6 +10,18 @@
 
 namespace sglang {
 
+// Warp-level max reduction returning both value and index.
+// Uses 2 redux.sync + 1 shfl instead of 10 shuffles.
+__device__ __forceinline__ void warpMaxWithIndex(
+    float& val, int& idx, uint32_t lane_id, uint32_t warp_mask) {
+  const float my_val = val;
+  asm("redux.sync.max.f32 %0, %1, %2;" : "=f"(val) : "f"(my_val), "r"(warp_mask));
+  const uint32_t has_max = (my_val == val) ? lane_id : 0xFFFFFFFFu;
+  uint32_t min_lane;
+  asm("redux.sync.min.u32 %0, %1, %2;" : "=r"(min_lane) : "r"(has_max), "r"(warp_mask));
+  idx = __shfl_sync(warp_mask, idx, min_lane);
+}
+
 // Kimi K2 MoE fused gate, supports NUM_EXPERTS in {256 (MiMo V2 Flash), 384 (Kimi K2)}.
 // Routing (DeepSeek "noaux_tc" with num_expert_group = 1):
 //   1. sigmoid(gate_logit)
@@ -138,15 +150,7 @@ __global__ void kimi_k2_moe_fused_gate_kernel_small_token(
     // Stage 1: per-warp argmax.
     float warp_max_val = biased_val;
     int warp_max_expert = tid;
-#pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2) {
-      float other_val = __shfl_down_sync(0xFFFFFFFF, warp_max_val, offset);
-      int other_expert = __shfl_down_sync(0xFFFFFFFF, warp_max_expert, offset);
-      if (other_val > warp_max_val) {
-        warp_max_val = other_val;
-        warp_max_expert = other_expert;
-      }
-    }
+    warpMaxWithIndex(warp_max_val, warp_max_expert, lane_id, 0xFFFFFFFF);
     if (lane_id == 0) {
       warp_maxs[warp_id] = warp_max_val;
       warp_experts[warp_id] = warp_max_expert;
@@ -157,15 +161,7 @@ __global__ void kimi_k2_moe_fused_gate_kernel_small_token(
     if (warp_id == 0) {
       float final_max = (lane_id < WARPS_PER_TOKEN_SMALL) ? warp_maxs[lane_id] : -FLT_MAX;
       int final_expert = (lane_id < WARPS_PER_TOKEN_SMALL) ? warp_experts[lane_id] : -1;
-#pragma unroll
-      for (int offset = 16; offset > 0; offset /= 2) {
-        float other_val = __shfl_down_sync(0xFFFFFFFF, final_max, offset);
-        int other_expert = __shfl_down_sync(0xFFFFFFFF, final_expert, offset);
-        if (other_val > final_max) {
-          final_max = other_val;
-          final_expert = other_expert;
-        }
-      }
+      warpMaxWithIndex(final_max, final_expert, lane_id, 0xFFFFFFFF);
       if (lane_id == 0) {
         selected_experts[k] = final_expert;
         if (renormalize && final_expert >= 0 && final_expert < NUM_EXPERTS) {
@@ -275,15 +271,7 @@ __global__ void kimi_k2_moe_fused_gate_kernel(
     }
 
     // warp shfl reduce; tie-break by lower expert id
-#pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2) {
-      float other_val = __shfl_down_sync(0xFFFFFFFF, max_val, offset);
-      int other_expert = __shfl_down_sync(0xFFFFFFFF, max_expert, offset);
-      if (other_val > max_val || (other_val == max_val && other_expert < max_expert)) {
-        max_val = other_val;
-        max_expert = other_expert;
-      }
-    }
+    warpMaxWithIndex(max_val, max_expert, lane_id, 0xFFFFFFFF);
 
     if (lane_id == 0) {
       bool valid = (max_expert >= 0 && max_expert < NUM_EXPERTS);

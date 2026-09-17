@@ -53,7 +53,7 @@ SGL_DEVICE T reduce(T value, mask_t active_mask = kFullMask) {
   constexpr bool kFullReduction = (kNumThreads == kWarpThreads && kInner) || (kNumThreads == 1 && !kInner);
   if constexpr (kFullReduction) {
 #if SGL_CUDA_ARCH >= 800
-    // 32 bit integer reduction
+    // 32 bit integer reduction (via CUDA intrinsics __reduce_*_sync)
     if constexpr (std::is_integral_v<T> && sizeof(T) <= 4) {
       if constexpr (OP == ReductionOp::SUM) {
         return __reduce_add_sync(active_mask, value);
@@ -63,23 +63,24 @@ SGL_DEVICE T reduce(T value, mask_t active_mask = kFullMask) {
         return __reduce_min_sync(active_mask, value);
       }
     }
-#endif
-#if SGL_CUDA_ARCH >= 1000 && SGL_CUDA_ARCH < 1100
-    // 32-bit float reduction
+    // 32-bit float min/max (redux.sync available SM80+)
     if constexpr (std::is_same_v<T, float>) {
       if constexpr (OP == ReductionOp::MAX) {
         float result;
-        asm("redux.sync.max.f32 %0, %1, %2;" : "=f"(result) : "f"(value), "r"(active_mask));
+        asm("redux.sync.max.f32 %0, %1, %2;"
+            : "=f"(result)
+            : "f"(value), "r"(active_mask));
         return result;
       } else if constexpr (OP == ReductionOp::MIN) {
         float result;
-        asm("redux.sync.min.f32 %0, %1, %2;" : "=f"(result) : "f"(value), "r"(active_mask));
+        asm("redux.sync.min.f32 %0, %1, %2;"
+            : "=f"(result)
+            : "f"(value), "r"(active_mask));
         return result;
       }
     }
-#endif
   }
-#endif  // redux.sync for CUDA only
+#endif  // redux.sync / __reduce_*_sync intrinsics (SM80+, CUDA only)
 
   if constexpr (kInner) {
 #pragma unroll

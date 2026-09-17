@@ -32,7 +32,10 @@ SGL_DEVICE float apply_activation_f32(float x_f32) {
   } else if constexpr (kAct == ActivationKind::kGELUTanh) {
     constexpr auto kGeluTanhAlpha = 0.044715f;
     constexpr auto kGeluTanhBeta = 0.7978845608028654f;
-    const float cdf = 0.5f * (1.0f + tanhf(kGeluTanhBeta * (x_f32 + kGeluTanhAlpha * x_f32 * x_f32 * x_f32)));
+    const float inner = kGeluTanhBeta * (x_f32 + kGeluTanhAlpha * x_f32 * x_f32 * x_f32);
+    float tanh_val;
+    asm("tanh.approx.f32 %0, %1;" : "=f"(tanh_val) : "f"(inner));
+    const float cdf = 0.5f * (1.0f + tanh_val);
     return x_f32 * cdf;
   } else if constexpr (kAct == ActivationKind::kReLU2) {
     const float relu = x_f32 > 0.0f ? x_f32 : 0.0f;

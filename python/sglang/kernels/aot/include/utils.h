@@ -409,12 +409,18 @@ __device__ __forceinline__ float atomicMaxFloat(float* addr, float value) {
 }
 
 __device__ __forceinline__ float warpReduceMax(float value) {
+#if __CUDA_ARCH__ >= 800
+  float result;
+  asm("redux.sync.max.f32 %0, %1, %2;" : "=f"(result) : "f"(value), "r"(FULL_MASK));
+  return result;
+#else
   value = fmaxf(value, __shfl_xor_sync(FULL_MASK, value, 16));
   value = fmaxf(value, __shfl_xor_sync(FULL_MASK, value, 8));
   value = fmaxf(value, __shfl_xor_sync(FULL_MASK, value, 4));
   value = fmaxf(value, __shfl_xor_sync(FULL_MASK, value, 2));
   value = fmaxf(value, __shfl_xor_sync(FULL_MASK, value, 1));
   return value;
+#endif
 }
 
 __device__ __forceinline__ float blockReduceMax(float value) {
